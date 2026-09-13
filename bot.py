@@ -43,12 +43,19 @@ def _setup_log():
         print("log setup error", e)
 
 try:
+    import collections
+    LOG_RING = collections.deque(maxlen=60)
+    RING_LOCK = threading.Lock()
+
     def _log_line(s):
+        with RING_LOCK:
+            LOG_RING.append("[%s] %s" % (time.strftime("%d.%m %H:%M:%S"), str(s)[:500]))
         try:
             with open("/tmp/updates.log", "a", encoding="utf-8") as f:
                 f.write("[%s] %s\n" % (time.strftime("%d.%m %H:%M:%S"), str(s)[:500]))
-        except Exception:
-            pass
+        except Exception as e:
+            with RING_LOCK:
+                LOG_RING.append("FILEWRITE_ERR: " + str(e)[:200])
 
     def _update_summary(u):
         m = getattr(u, "message", None) or getattr(u, "edited_message", None) or getattr(u, "business_message", None)
@@ -71,8 +78,9 @@ try:
         LAST_UPDATE["ts"] = time.time()
         try:
             _log_line(_update_summary(u))
-        except Exception:
-            pass
+        except Exception as e:
+            with RING_LOCK:
+                LOG_RING.append("ONUPDATE_ERR: " + repr(e) + " " + traceback.format_exc()[-400:])
     bot.set_update_listener(_on_update)
 except Exception:
     pass
@@ -880,26 +888,13 @@ class HealthHandler(BaseHTTPRequestHandler):
                     out.append("getMe_body=%s" % resp.read(300).decode("utf-8", "replace"))
             except Exception as e:
                 out.append("getMe_err=%s" % type(e).__name__ + ":" + str(e)[:200])
-            try:
-                if os.path.exists("/tmp/bot.log"):
-                    with open("/tmp/bot.log", "r", encoding="utf-8") as f:
-                        lines = f.readlines()[-25:]
-                    out.append("--- LOG TAIL ---")
-                    out.extend(l.rstrip("\n")[:300] for l in lines)
-                else:
-                    out.append("no /tmp/bot.log")
-            except Exception as e:
-                out.append("log_err=" + str(e)[:200])
-            try:
-                if os.path.exists("/tmp/updates.log"):
-                    with open("/tmp/updates.log", "r", encoding="utf-8") as f:
-                        lines = f.readlines()[-25:]
-                    out.append("--- UPDATES LOG TAIL ---")
-                    out.extend(l.rstrip("\n")[:300] for l in lines)
-                else:
-                    out.append("no /tmp/updates.log")
-            except Exception as e:
-                out.append("updateslog_err=" + str(e)[:200])
+            with RING_LOCK:
+                ring_lines = list(LOG_RING)[-35:]
+            if ring_lines:
+                out.append("--- RING LOG ---")
+                out.extend(l[:300] for l in ring_lines)
+            else:
+                out.append("RING EMPTY")
             body = ("\n".join(out)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -928,13 +923,15 @@ if __name__ == "__main__":
         try:
             updates = bot.get_updates(offset=(bot.last_update_id + 1), timeout=15)
             if updates:
-                print("updates:", len(updates))
+                _log_line("POLL got=%d first_id=%d" % (len(updates), updates[0].update_id))
                 bot.process_new_updates(updates)
+            else:
+                _log_line("POLL empty")
         except _ah.ApiTelegramException as e:
             code = getattr(e, "error_code", None)
-            print("API error:", code, str(e)[:200])
+            _log_line("API error: %s %s" % (code, str(e)[:200]))
             time.sleep(10 if code == 409 else 5)
         except Exception as e:
-            print("poll loop error:", type(e).__name__, str(e)[:300])
+            _log_line("POLLERR: %s %s" % (type(e).__name__, str(e)[:300]))
             traceback.print_exc()
             time.sleep(5)
