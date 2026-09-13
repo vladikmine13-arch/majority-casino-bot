@@ -167,6 +167,8 @@ def field_markup(game):
 # ---------------------------------------------------------------------
 # ОТЛАДКА СТАР/ЗВЁЗД — ловим сырые апдейты и форматы звёзд MechaGram
 # ---------------------------------------------------------------------
+LAST_UPDATE = {"ts": None}
+
 def _plain(obj):
     if hasattr(obj, "__dict__"):
         return {k: _plain(v) for k, v in vars(obj).items()}
@@ -253,6 +255,7 @@ def log_all_update_types(message):
     if message and not already:
         try:
             setattr(message, "_logged", True)
+            LAST_UPDATE["ts"] = time.time()
         except Exception:
             pass
         dump_update_debug(message)
@@ -797,10 +800,25 @@ def cb_withdraw(call):
 # ---------------------------------------------------------------------
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        body = b"ok"
+        if self.path == "/diag":
+            out = []
+            out.append("now=%s" % time.strftime("%d.%m %H:%M:%S"))
+            out.append("last_update=%s" % (time.strftime("%d.%m %H:%M:%S", time.localtime(LAST_UPDATE["ts"])) if LAST_UPDATE["ts"] else "none"))
+            try:
+                import urllib.request
+                req = urllib.request.Request(SERVER_URL + "/bot" + TOKEN + "/getMe", timeout=10)
+                with urllib.request.urlopen(req) as resp:
+                    out.append("getMe_http=%d" % resp.status)
+                    out.append("getMe_body=%s" % resp.read(300).decode("utf-8", "replace"))
+            except Exception as e:
+                out.append("getMe_err=%s" % type(e).__name__ + ":" + str(e)[:200])
+            body = ("\n".join(out)).encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(b"ok")
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
