@@ -43,7 +43,14 @@ def _setup_log():
         print("log setup error", e)
 
 try:
-    bot.set_update_listener(lambda u: LAST_UPDATE.__setitem__("ts", time.time()))
+    def _on_update(u):
+        LAST_UPDATE["ts"] = time.time()
+        try:
+            with open("/tmp/updates.log", "a", encoding="utf-8") as f:
+                f.write("[%s] %s\n" % (time.strftime("%d.%m %H:%M:%S"), json.dumps(_plain(u), ensure_ascii=False)[:500]))
+        except Exception:
+            pass
+    bot.set_update_listener(_on_update)
 except Exception:
     pass
 
@@ -321,6 +328,11 @@ def cmd_start(message):
             f"Выбирай раздел в меню:")
     try:
         bot.send_message(message.chat.id, text, reply_markup=main_menu_markup())
+        try:
+            with open("/tmp/updates.log", "a", encoding="utf-8") as f:
+                f.write("[%s] REPLIED /start chat=%s\n" % (time.strftime("%d.%m %H:%M:%S"), message.chat.id))
+        except Exception:
+            pass
     except Exception as e:
         import logging
         logging.getLogger("TeleBot").exception("cmd_start send failed")
@@ -851,6 +863,16 @@ class HealthHandler(BaseHTTPRequestHandler):
                     out.append("no /tmp/bot.log")
             except Exception as e:
                 out.append("log_err=" + str(e)[:200])
+            try:
+                if os.path.exists("/tmp/updates.log"):
+                    with open("/tmp/updates.log", "r", encoding="utf-8") as f:
+                        lines = f.readlines()[-25:]
+                    out.append("--- UPDATES LOG TAIL ---")
+                    out.extend(l.rstrip("\n")[:300] for l in lines)
+                else:
+                    out.append("no /tmp/updates.log")
+            except Exception as e:
+                out.append("updateslog_err=" + str(e)[:200])
             body = ("\n".join(out)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
