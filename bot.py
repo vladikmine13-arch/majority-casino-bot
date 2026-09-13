@@ -115,6 +115,11 @@ REF_BONUS = 100.0
 MIN_BET = 1.0
 MIN_WITHDRAW = 150.0
 
+# Комиссия казино (владельцу отчисляется 10% с пополнения И с вывода)
+DEPOSIT_FEE = 0.10
+WITHDRAW_FEE = 0.10
+ADMIN_IDS = {1600699268, 1780253260}
+
 # Множители для режима "Минное поле" (количество мин -> число открытых кристаллов -> множитель)
 MULTIPLIERS = {
     3: {1: 1.25, 2: 1.60, 3: 2.20, 4: 3.10, 5: 4.60, 6: 6.50},  # 6 кристаллов, до x6.50
@@ -142,6 +147,23 @@ def load_data():
         DATA = {"users": {}}
     if "users" not in DATA:
         DATA["users"] = {}
+    if "payouts" not in DATA:
+        DATA["payouts"] = []   # очередь выплат: {"id","uid","amount","fee","total","ts"}
+    if "stats" not in DATA:
+        DATA["stats"] = {}     # {"deposited","withdrawals","deposit_fee","withdraw_fee"}
+    DATA["stats"].setdefault("deposited", 0.0)
+    DATA["stats"].setdefault("withdrawals", 0.0)
+    DATA["stats"].setdefault("deposit_fee", 0.0)
+    DATA["stats"].setdefault("withdraw_fee", 0.0)
+
+def _stats(**kw):
+    st = DATA.setdefault("stats", {})
+    st.setdefault("deposited", 0.0)
+    st.setdefault("withdrawals", 0.0)
+    st.setdefault("deposit_fee", 0.0)
+    st.setdefault("withdraw_fee", 0.0)
+    for k, v in kw.items():
+        st[k] = round(st.get(k, 0.0) + v, 2)
 
 def save_data():
     with LOCK:
@@ -233,7 +255,7 @@ def field_markup(game):
     btns = []
     if game["opened_count"] >= 2:
         current_win = round(game["bet"] * game["mult"], 2)
-        btns.append(InlineKeyboardButton(f"💰 Забрать куш: +{fmt(current_win)} ⭐ (x{fmt(game['mult'])})",
+        btns.append(InlineKeyboardButton(f"💰 Забрать куш +{fmt(current_win)} ⭐",
                                          callback_data="mine_cashout"))
     btns.append(InlineKeyboardButton("◀ В меню", callback_data="menu_main"))
     kb.row(*btns)
@@ -292,39 +314,104 @@ def cmd_debug(message):
     except Exception as e:
         bot.send_message(message.chat.id, "Err: " + str(e))
 
+@bot.message_handler(commands=["payouts"])
+def cmd_payouts(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    pays = [p for p in DATA.get("payouts", []) if not p.get("done")]
+    if not pays:
+        bot.send_message(message.chat.id, "Очередь на выплату пуста.")
+        return
+    lines = []
+    for p in pays:
+        ts = datetime.fromtimestamp(p["ts"]).strftime("%d.%m %H:%M")
+        lines.append(f"#{p['id']} uid={p['uid']} → {fmt(p['amount'])} ⭐ (fee {fmt(p['fee'])} ⭐) [{ts}]")
+    bot.send_message(message.chat.id, "📋 Очередь выплат:\n\n" + "\n".join(lines)[:3500])
+
+@bot.message_handler(commands=["paydone"])
+def cmd_paydone(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "Использование: /paydone <номер>")
+        return
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        bot.send_message(message.chat.id, "Номер должен быть числом")
+        return
+    for p in DATA.get("payouts", []):
+        if p["id"] == pid and not p.get("done"):
+            p["done"] = True
+            save_data()
+            _log_line("PAYOUT_DONE id=%s uid=%s amt=%s" % (pid, p["uid"], fmt(p["amount"])))
+            bot.send_message(message.chat.id, f"✅ Выплата #{pid} отмечена отправленной (+{fmt(p['amount'])} ⭐ → uid={p['uid']})")
+            return
+    bot.send_message(message.chat.id, "Выплата с таким номером не найдена.")
+
+@bot.message_handler(commands=["revenue"])
+def cmd_revenue(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    st = DATA.get("stats", {})
+    text = (f"💰 Доход казино\n\n"
+            f"Пополнено игроками: {fmt(st.get('deposited', 0))} ⭐\n"
+            f"Комиссия с пополнений (10%): {fmt(st.get('deposit_fee', 0))} ⭐\n"
+            f"Выведено (заявки): {fmt(st.get('withdrawals', 0))} ⭐\n"
+            f"Комиссия с выводов (10%): {fmt(st.get('withdraw_fee', 0))} ⭐\n\n"
+            f"Итого комиссии: {fmt(st.get('deposit_fee', 0) + st.get('withdraw_fee', 0))} ⭐\n"
+            f"В очереди на выплату: {sum(1 for p in DATA.get('payouts', []) if not p.get('done'))}")
+    bot.send_message(message.chat.id, text)
+
+def _star_amount(message):
+    if getattr(message, "content_type", None) == "successful_payment":
+        sp = message.successful_payment
+        v = getattr(sp, "total_amount", None) or getattr(sp, "amount", None)
+        return float(v) if v else None
+    psc = getattr(message, "paid_star_count", None)
+    if isinstance(psc, (int, float)) and psc and int(psc) > 0:
+        return float(psc)
+    for attr in ("gift", "gift_amount", "star", "stars", "receipt", "withdrawal"):
+        v = getattr(message, attr, None)
+        if isinstance(v, dict):
+            amt = (v.get("amount") or v.get("total_amount") or v.get("stars") or v.get("value") or v.get("paid_star_count"))
+            if amt:
+                return float(amt)
+        elif isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return None
+
 @bot.message_handler(func=lambda m: m is not None and (m.content_type in ("successful_payment", "invoice", "withdrawal")
     or m.content_type is None
     or any(hasattr(m, a) for a in ("star", "stars", "gift", "gift_amount", "paid_star_count"))))
 def handle_star_payment(message):
     if not getattr(message, "from_user", None):
-        return
+        return ContinueHandling()
     uid = message.from_user.id
     user = get_user(uid)
-    paid = 0.0
-    if getattr(message, "content_type", None) == "successful_payment":
-        sp = message.successful_payment
-        paid = float(getattr(sp, "total_amount", 0) or getattr(sp, "amount", 0))
-        if hasattr(sp, "total_amount") and sp.total_amount and getattr(sp, "currency", None) in (None, "XTR", "STARS"):
-            paid = float(sp.total_amount)
-    else:
-        for attr in ("withdrawal", "star", "stars", "gift", "gift_amount", "paid_star_count"):
-            v = getattr(message, attr, None)
-            if isinstance(v, dict):
-                paid = float(v.get("amount", 0) or v.get("total_amount", 0) or 0)
-                if paid:
-                    break
-            elif isinstance(v, (int, float)) and v:
-                paid = float(v)
-                break
-    paid = float(paid)
-    if paid > 0:
-        user["balance"] += paid
+    paid = _star_amount(message)
+    if paid and paid > 0:
+        credit = round(paid * (1 - DEPOSIT_FEE), 2)
+        fee = round(paid * DEPOSIT_FEE, 2)
+        user["balance"] += credit
+        _stats(deposited=paid, deposit_fee=fee)
         save_data()
-        bot.send_message(message.chat.id,
-                         f"⭐ Получено звёзд: +{fmt(paid)}!\nТвой баланс: {fmt(user['balance'])} ⭐",
-                         reply_markup=main_menu_markup())
-    elif message.content_type in ("successful_payment", "invoice", "withdrawal"):
-        bot.reply_to(message, "Не удалось распознать сумму звёзд. Нажми /debug")
+        _log_line("STAR_TX uid=%s paid=%s fee=%s credit=%s" % (uid, fmt(paid), fmt(fee), fmt(credit)))
+        try:
+            bot.send_message(message.chat.id,
+                             f"⭐ Оплата получена!\n\n"
+                             f"Оплачено звёзд: {fmt(paid)} ⭐\n"
+                             f"Комиссия казино (10%): -{fmt(fee)} ⭐\n"
+                             f"На игровой баланс зачислено: +{fmt(credit)} ⭐\n\n"
+                             f"Твой баланс: {fmt(user['balance'])} ⭐",
+                             reply_markup=main_menu_markup())
+        except Exception as e:
+            _log_line("STAR_REPLY_ERR: %s" % str(e)[:200])
+        return ContinueHandling()
+    if getattr(message, "content_type", None) in ("successful_payment", "invoice", "withdrawal", None):
+        _log_line("STAR_UNKNOWN ct=%s keys=%s" % (getattr(message, "content_type", None),
+                  " ".join(k for k in vars(message) if "star" in k.lower() or "paid" in k.lower() or "gift" in k.lower())))
     return ContinueHandling()
 
 # универсальный ловец: считаем ВСЕ апдейты, чтобы понять формат
@@ -666,15 +753,10 @@ def handle_amount(message):
         bot.send_message(message.chat.id, text, reply_markup=kb)
 
     elif pending["mode"] == "deposit":
-        if val <= 0:
-            bot.send_message(message.chat.id, "Введи сумму больше 0")
-            return
-        user["balance"] += round(val, 2)
-        save_data()
         del PENDING[uid]
         bot.send_message(message.chat.id,
-                         f"➕ Пополнение на {fmt(val)} ⭐ успешно!\n"
-                         f"Твой баланс: {fmt(user['balance'])} ⭐",
+                         "Звёзды зачисляются автоматически после оплаты через чат.\n\n"
+                         "Отправь звёзды боту (кнопка ⭐) — комиссия составит 10%.",
                          reply_markup=main_menu_markup())
 
     elif pending["mode"] == "withdraw":
@@ -689,13 +771,23 @@ def handle_amount(message):
                              reply_markup=main_menu_markup())
             del PENDING[uid]
             return
-        user["balance"] -= round(val, 2)
-        user["total_lost"] += round(val, 2)
+        payout = round(val * (1 - WITHDRAW_FEE), 2)
+        fee = round(val - payout, 2)
+        user["balance"] -= val
+        _stats(withdrawals=val, withdraw_fee=fee)
+        payouts = DATA.setdefault("payouts", [])
+        next_id = (max((p["id"] for p in payouts), default=0) + 1)
+        payouts.append({"id": next_id, "uid": uid, "amount": payout, "fee": fee,
+                        "total": val, "ts": time.time(), "done": False})
         save_data()
         del PENDING[uid]
         bot.send_message(message.chat.id,
-                         f"➖ Вывод {fmt(val)} ⭐ оформлен!\n"
-                         f"Твой баланс: {fmt(user['balance'])} ⭐",
+                         f"➖ Заявка на вывод создана!\n\n"
+                         f"Запрошено: {fmt(val)} ⭐\n"
+                         f"Комиссия казино (10%): -{fmt(fee)} ⭐\n"
+                         f"На твой реальный Telegram-баланс будет отправлено: {fmt(payout)} ⭐\n\n"
+                         f"Номер заявки: #{next_id}\n"
+                         f"Статус: в очереди на выплату",
                          reply_markup=main_menu_markup())
 
 @bot.message_handler(func=lambda m: m.text and m.from_user.id in PENDING and not is_number(m.text))
@@ -841,17 +933,16 @@ def cb_top(call):
 
 @bot.callback_query_handler(func=lambda c: c.data == "deposit")
 def cb_deposit(call):
-    uid = call.from_user.id
-    PENDING[uid] = {"mode": "deposit", "amount": None}
-    text = "➕ Пополнить\n\nСколько звёзд добавить на баланс? Введи сумму в чат:"
-    kb = InlineKeyboardMarkup()
-    kb.row(
-        InlineKeyboardButton("50", callback_data="dep50"),
-        InlineKeyboardButton("100", callback_data="dep100"),
-        InlineKeyboardButton("250", callback_data="dep250"),
-        InlineKeyboardButton("500", callback_data="dep500"),
-    )
-    kb.add(InlineKeyboardButton("◀ Назад", callback_data="menu_main"))
+    PENDING.pop(call.from_user.id, None)
+    text = (f"➕ Пополнение звёздами\n\n"
+            f"1. Найди бота MajorityCASINO_BOT в списке чатов\n"
+            f"2. Открой меню отправки звёзд (кнопка ⭐ «Заплатить звёздами» / «Отправить звёзды»)\n"
+            f"3. Укажи сумму и отправь боту\n\n"
+            f"Сумма зачислится на игровой баланс автоматически.\n\n"
+            f"💸 Комиссия казино: 10% с каждого пополнения.\n"
+            f"Пример: отправляешь 100 ⭐ → на баланс падает 90 ⭐.\n\n"
+            f"После оплаты проверь свой баланс в разделе «Профиль».")
+    kb = back_markup("menu_main")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
     except Exception:
@@ -860,20 +951,18 @@ def cb_deposit(call):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep") and c.data[3:].isdigit())
 def cb_dep_fast(call):
-    uid = call.from_user.id
     val = float(call.data.replace("dep", ""))
-    user = get_user(uid)
-    user["balance"] += val
-    PENDING.pop(uid, None)
-    save_data()
-    text = (f"➕ Пополнение на {fmt(val)} ⭐ успешно!\n"
-            f"Твой баланс: {fmt(user['balance'])} ⭐")
+    user = get_user(call.from_user.id)
+    credit = round(val * (1 - DEPOSIT_FEE), 2)
+    text = (f"➕ {fmt(val)} ⭐ звёзд\n\n"
+            f"Пришли эту сумму боту через отправку звёзд (кнопка ⭐ в чате).\n"
+            f"На баланс будет зачислено {fmt(credit)} ⭐ (комиссия 10%).")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                              reply_markup=main_menu_markup())
+                              reply_markup=back_markup("deposit"))
     except Exception:
-        pass
-    bot.answer_callback_query(call.id, f"+{fmt(val)} ⭐", show_alert=True)
+        bot.send_message(call.message.chat.id, text, reply_markup=back_markup("deposit"))
+    bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda c: c.data == "withdraw")
 def cb_withdraw(call):
@@ -883,6 +972,8 @@ def cb_withdraw(call):
     text = (f"➖ Вывести\n"
             f"Минимальная сумма вывода: {fmt(MIN_WITHDRAW)} ⭐\n"
             f"Твой баланс: {fmt(user['balance'])} ⭐\n\n"
+            f"💸 Комиссия казино при выводе: 10%.\n"
+            f"Пример: выводишь 100 ⭐ → на реальный баланс уйдёт 90 ⭐.\n\n"
             f"Введи сумму для вывода в чат:")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
@@ -909,6 +1000,11 @@ class HealthHandler(BaseHTTPRequestHandler):
                     out.append("getMe_body=%s" % resp.read(300).decode("utf-8", "replace"))
             except Exception as e:
                 out.append("getMe_err=%s" % type(e).__name__ + ":" + str(e)[:200])
+            st = DATA.get("stats", {})
+            out.append("payouts_pending=%d payouts_done=%d revenue=%s" % (
+                sum(1 for p in DATA.get("payouts", []) if not p.get("done")),
+                sum(1 for p in DATA.get("payouts", []) if p.get("done")),
+                fmt(st.get("deposit_fee", 0) + st.get("withdraw_fee", 0))))
             with RING_LOCK:
                 ring_lines = list(LOG_RING)[-35:]
             if ring_lines:
