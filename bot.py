@@ -72,6 +72,8 @@ try:
                 getattr(cm, "chat", None).id if cm and getattr(cm, "chat", None) else None,
                 getattr(getattr(cq, "from_user", None), "id", None),
                 (getattr(cq, "data", None) or "")[:80])
+        if isinstance(u, dict):
+            return "RAW dict keys=%s data=%r" % (list(u.keys())[:20], str(u)[:300])
         return "UP %s present=%s" % (type(u).__name__, [k for k in vars(u) if getattr(u, k, None) is not None][:15])
 
     def _on_update(u):
