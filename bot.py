@@ -874,4 +874,18 @@ if __name__ == "__main__":
     thread = threading.Thread(target=start_health_server, daemon=True)
     thread.start()
     print("Bot started. Server:", SERVER_URL)
-    bot.infinity_polling(none_stop=True)
+    import telebot.apihelper as _ah
+    while True:
+        try:
+            updates = bot.get_updates(offset=(bot.last_update_id + 1), timeout=15)
+            if updates:
+                print("updates:", len(updates))
+                bot.process_new_updates(updates)
+        except _ah.ApiTelegramException as e:
+            code = getattr(e, "error_code", None)
+            print("API error:", code, str(e)[:200])
+            time.sleep(10 if code == 409 else 5)
+        except Exception as e:
+            print("poll loop error:", type(e).__name__, str(e)[:300])
+            traceback.print_exc()
+            time.sleep(5)
