@@ -43,11 +43,34 @@ def _setup_log():
         print("log setup error", e)
 
 try:
+    def _log_line(s):
+        try:
+            with open("/tmp/updates.log", "a", encoding="utf-8") as f:
+                f.write("[%s] %s\n" % (time.strftime("%d.%m %H:%M:%S"), str(s)[:500]))
+        except Exception:
+            pass
+
+    def _update_summary(u):
+        m = getattr(u, "message", None) or getattr(u, "edited_message", None) or getattr(u, "business_message", None)
+        if m is not None:
+            chat = getattr(m, "chat", None)
+            fu = getattr(m, "from_user", None)
+            return "MSG ct=%s chat=%s from=%s text=%r" % (
+                getattr(m, "content_type", None), getattr(chat, "id", None),
+                getattr(fu, "id", None), (getattr(m, "text", None) or "")[:80])
+        cq = getattr(u, "callback_query", None)
+        if cq is not None:
+            cm = getattr(cq, "message", None)
+            return "CB chat=%s from=%s data=%r" % (
+                getattr(cm, "chat", None).id if cm and getattr(cm, "chat", None) else None,
+                getattr(getattr(cq, "from_user", None), "id", None),
+                (getattr(cq, "data", None) or "")[:80])
+        return "UP %s present=%s" % (type(u).__name__, [k for k in vars(u) if getattr(u, k, None) is not None][:15])
+
     def _on_update(u):
         LAST_UPDATE["ts"] = time.time()
         try:
-            with open("/tmp/updates.log", "a", encoding="utf-8") as f:
-                f.write("[%s] %s\n" % (time.strftime("%d.%m %H:%M:%S"), json.dumps(_plain(u), ensure_ascii=False)[:500]))
+            _log_line(_update_summary(u))
         except Exception:
             pass
     bot.set_update_listener(_on_update)
@@ -283,6 +306,10 @@ def log_all_update_types(message):
         try:
             setattr(message, "_logged", True)
             LAST_UPDATE["ts"] = time.time()
+            _log_line("MSGHANDLER fired ct=%s chat=%s text=%r" % (
+                getattr(message, "content_type", None),
+                getattr(getattr(message, "chat", None), "id", None),
+                (getattr(message, "text", None) or "")[:80]))
         except Exception:
             pass
         dump_update_debug(message)
