@@ -414,6 +414,26 @@ def handle_star_payment(message):
                   " ".join(k for k in vars(message) if "star" in k.lower() or "paid" in k.lower() or "gift" in k.lower())))
     return ContinueHandling()
 
+# отвечаем на pre_checkout_query — клиент MechaGram может сам запускать оплату звёздами
+@bot.pre_checkout_query_handler(func=lambda q: True)
+def handle_pre_checkout(query):
+    try:
+        uid = getattr(getattr(query, "from_user", None), "id", None)
+        amount = getattr(query, "total_amount", None)
+        currency = getattr(query, "currency", "") or ""
+        _log_line("PRECHECKOUT uid=%s amount=%s cur=%s qid=%s" % (uid, amount, currency, query.id))
+        try:
+            dump_update_debug(query)
+        except Exception:
+            pass
+        try:
+            bot.answer_pre_checkout_query(query.id, ok=True)
+            _log_line("PRECHECKOUT_OK")
+        except Exception as e:
+            _log_line("PRECHECKOUT_ERR: %s" % str(e)[:200])
+    except Exception as e:
+        _log_line("PRECHECKOUT_HANDLER_ERR: %s" % str(e)[:200])
+
 # универсальный ловец: считаем ВСЕ апдейты, чтобы понять формат
 @bot.message_handler(func=lambda m: True)
 def log_all_update_types(message):
@@ -759,9 +779,9 @@ def handle_amount(message):
         pending["amount"] = round(val, 2)
         credit = round(val * (1 - DEPOSIT_FEE), 2)
         text = (f"✅ Заявка на пополнение: {fmt(val)} ⭐\n\n"
-                f"1. Нажми на кнопку ⭐ в чате с ботом\n"
+                f"1. Нажми в клиенте кнопку «Оплатить звёздами» (⭐)\n"
                 f"2. Отправь ровно {fmt(val)} ⭐\n"
-                f"3. Звёзды зачислятся автоматически через пару секунд\n\n"
+                f"3. Подтверди оплату — звёзды зачислятся автоматически\n\n"
                 f"Минус 10% комиссия: на баланс упадёт {fmt(credit)} ⭐.\n"
                 f"Если ничего не произошло — проверь раздел «Профиль».")
         bot.send_message(message.chat.id, text, reply_markup=back_markup("menu_main"))
