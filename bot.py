@@ -154,7 +154,9 @@ def field_markup(game):
         kb.row(*buttons)
     btns = []
     if game["opened_count"] >= 2:
-        btns.append(InlineKeyboardButton(f"💰 Забрать куш (x{fmt(game['mult'])})", callback_data="mine_cashout"))
+        current_win = round(game["bet"] * game["mult"], 2)
+        btns.append(InlineKeyboardButton(f"💰 Забрать куш: +{fmt(current_win)} ⭐ (x{fmt(game['mult'])})",
+                                         callback_data="mine_cashout"))
     btns.append(InlineKeyboardButton("◀ В меню", callback_data="menu_main"))
     kb.row(*btns)
     return kb
@@ -162,6 +164,99 @@ def field_markup(game):
 # ---------------------------------------------------------------------
 # СТАРТ / РЕГИСТРАЦИЯ
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# ОТЛАДКА СТАР/ЗВЁЗД — ловим сырые апдейты и форматы звёзд MechaGram
+# ---------------------------------------------------------------------
+def _plain(obj):
+    if hasattr(obj, "__dict__"):
+        return {k: _plain(v) for k, v in vars(obj).items()}
+    if isinstance(obj, (list, tuple)):
+        return [_plain(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _plain(v) for k, v in obj.items()}
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    return str(obj)
+
+def dump_update_debug(message):
+    try:
+        d = _plain(message) if message else None
+        if not d:
+            return
+        keys = " ".join(d.keys())
+        dbg_line = json.dumps(d, ensure_ascii=False)[:4000]
+        now = time.strftime("%d.%m %H:%M:%S")
+        with open("/tmp/updates_debug.log", "a", encoding="utf-8") as f:
+            f.write(f"[{now}] {dbg_line}\n")
+        # интересующие поля для звёзд/платежей
+        for marker in ("star", "Star", "invoice", "payment", "gift", "paid", "deeplink"):
+            if marker in keys:
+                print("STAR_MARKER:", marker, dbg_line[:1000])
+    except Exception as e:
+        print("debug dump error", e)
+
+@bot.message_handler(commands=["debug"])
+def cmd_debug(message):
+    uid = message.from_user.id
+    if uid != 1600699268 and uid != 1780253260:
+        bot.reply_to(message, "Недоступно")
+        return
+    try:
+        lines = []
+        if os.path.exists("/tmp/updates_debug.log"):
+            with open("/tmp/updates_debug.log", "r", encoding="utf-8") as f:
+                lines = f.readlines()[-20:]
+        text = "".join(lines) if lines else "Лог пуст"
+        text = text[:3500]
+        bot.send_message(message.chat.id, text)
+    except Exception as e:
+        bot.send_message(message.chat.id, "Err: " + str(e))
+
+@bot.message_handler(func=lambda m: m is not None and (m.content_type in ("successful_payment", "invoice", "withdrawal")
+    or m.content_type is None
+    or any(hasattr(m, a) for a in ("star", "stars", "gift", "gift_amount", "paid_star_count"))))
+def handle_star_payment(message):
+    if not getattr(message, "from_user", None):
+        return
+    uid = message.from_user.id
+    user = get_user(uid)
+    paid = 0.0
+    if getattr(message, "content_type", None) == "successful_payment":
+        sp = message.successful_payment
+        paid = float(getattr(sp, "total_amount", 0) or getattr(sp, "amount", 0))
+        if hasattr(sp, "total_amount") and sp.total_amount and getattr(sp, "currency", None) in (None, "XTR", "STARS"):
+            paid = float(sp.total_amount)
+    else:
+        for attr in ("withdrawal", "star", "stars", "gift", "gift_amount", "paid_star_count"):
+            v = getattr(message, attr, None)
+            if isinstance(v, dict):
+                paid = float(v.get("amount", 0) or v.get("total_amount", 0) or 0)
+                if paid:
+                    break
+            elif isinstance(v, (int, float)) and v:
+                paid = float(v)
+                break
+    paid = float(paid)
+    if paid > 0:
+        user["balance"] += paid
+        save_data()
+        bot.send_message(message.chat.id,
+                         f"⭐ Получено звёзд: +{fmt(paid)}!\nТвой баланс: {fmt(user['balance'])} ⭐",
+                         reply_markup=main_menu_markup())
+    elif message.content_type in ("successful_payment", "invoice", "withdrawal"):
+        bot.reply_to(message, "Не удалось распознать сумму звёзд. Нажми /debug")
+
+# универсальный ловец: считаем ВСЕ апдейты, чтобы понять формат
+@bot.message_handler(func=lambda m: True)
+def log_all_update_types(message):
+    already = hasattr(message, "_logged")
+    if message and not already:
+        try:
+            setattr(message, "_logged", True)
+        except Exception:
+            pass
+        dump_update_debug(message)
+
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     uid = message.from_user.id
@@ -395,7 +490,9 @@ def cb_cell(call):
     text = (f"💎 Кристалл найден!\n"
             f"Мин на поле: {mines}\n"
             f"Открыто {opened}/{total_safe}\n"
-            f"Множитель: x{fmt(game['mult'])}")
+            f"Множитель: x{fmt(game['mult'])}\n"
+            f"💰 Текущий выигрыш: +{fmt(round(game['bet'] * game['mult'], 2))} ⭐\n"
+            f"Нажми «Забрать куш», чтобы получить его")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                               reply_markup=field_markup(game))
