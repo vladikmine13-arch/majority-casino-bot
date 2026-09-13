@@ -22,6 +22,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+try:
+    from telebot.handler_backends import ContinueHandling
+except ImportError:
+    ContinueHandling = None
 
 # --- ТОКЕН бота (переменная окружения BOT_TOKEN или токен по умолчанию) ---
 TOKEN = os.environ.get("BOT_TOKEN", "1780253908:YG78GYA-LrLANjSjGqzmZXMxjeG8Nrdibid")
@@ -337,6 +341,9 @@ def log_all_update_types(message):
         except Exception:
             pass
         dump_update_debug(message)
+    if ContinueHandling is None:
+        return None
+    return ContinueHandling()
 
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
