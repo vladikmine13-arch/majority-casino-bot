@@ -30,7 +30,7 @@ except ImportError:
 # --- ТОКЕН бота (переменная окружения BOT_TOKEN или токен по умолчанию) ---
 TOKEN = os.environ.get("BOT_TOKEN", "1780253908:YG78GYA-LrLANjSjGqzmZXMxjeG8Nrdibid")
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 
 # --- ЛОГ в /tmp/bot.log (доступен через /diag) ---
 def _setup_log():
@@ -388,6 +388,7 @@ def cmd_start(message):
         bot.send_message(message.chat.id, text, reply_markup=main_menu_markup())
         _log_line("REPLIED /start chat=%s" % message.chat.id)
     except Exception as e:
+        _log_line("CMD_START_ERR: %s" % str(e)[:200])
         import logging
         logging.getLogger("TeleBot").exception("cmd_start send failed")
         try:
@@ -944,6 +945,7 @@ if __name__ == "__main__":
             if updates:
                 _log_line("POLL got=%d first_id=%d" % (len(updates), updates[0].update_id))
                 bot.process_new_updates(updates)
+                _log_line("PROCESSED n=%d" % len(updates))
             else:
                 _log_line("POLL empty")
         except _ah.ApiTelegramException as e:
