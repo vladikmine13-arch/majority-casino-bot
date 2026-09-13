@@ -807,8 +807,8 @@ class HealthHandler(BaseHTTPRequestHandler):
             out.append("last_update=%s" % (time.strftime("%d.%m %H:%M:%S", time.localtime(LAST_UPDATE["ts"])) if LAST_UPDATE["ts"] else "none"))
             try:
                 import urllib.request
-                req = urllib.request.Request(SERVER_URL + "/bot" + TOKEN + "/getMe", timeout=10)
-                with urllib.request.urlopen(req) as resp:
+                req = urllib.request.Request(SERVER_URL + "/bot" + TOKEN + "/getMe")
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     out.append("getMe_http=%d" % resp.status)
                     out.append("getMe_body=%s" % resp.read(300).decode("utf-8", "replace"))
             except Exception as e:
