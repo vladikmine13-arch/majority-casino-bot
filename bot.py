@@ -350,6 +350,95 @@ def cmd_paydone(message):
             return
     bot.send_message(message.chat.id, "Выплата с таким номером не найдена.")
 
+def _resolve_target_id(text):
+    txt = (text or "").strip().lstrip("@")
+    if txt.isdigit():
+        return int(txt)
+    low = txt.lower()
+    for uid, u in DATA.get("users", {}).items():
+        if (u.get("username") or "").lower() == low:
+            return int(uid)
+    return None
+
+def _require_admin(message):
+    return message.from_user.id in ADMIN_IDS
+
+@bot.message_handler(commands=["give"])
+def cmd_give(message):
+    if not _require_admin(message):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        bot.send_message(message.chat.id, "Использование: /give <id или @username> <сумма>")
+        return
+    target = _resolve_target_id(parts[1])
+    if target is None:
+        bot.send_message(message.chat.id, f"Игрок @{parts[1].lstrip('@')} не найден.")
+        return
+    try:
+        val = float(parts[2])
+    except ValueError:
+        bot.send_message(message.chat.id, "Сумма должна быть числом")
+        return
+    if val <= 0:
+        bot.send_message(message.chat.id, "Сумма должна быть больше 0")
+        return
+    user = get_user(target)
+    credit = round(val * (1 - DEPOSIT_FEE), 2)
+    fee = round(val - credit, 2)
+    user["balance"] += credit
+    _stats(deposited=val, deposit_fee=fee)
+    save_data()
+    _log_line("GIVE uid=%s val=%s fee=%s credit=%s" % (target, fmt(val), fmt(fee), fmt(credit)))
+    bot.send_message(message.chat.id,
+                     f"✅ Зачислено игроку @{parts[1].lstrip('@')} (uid={target}) {fmt(val)} ⭐\n"
+                     f"Комиссия (10%): {fmt(fee)} ⭐\n"
+                     f"На баланс: +{fmt(credit)} ⭐ (теперь {fmt(user['balance'])} ⭐)")
+    try:
+        bot.send_message(target,
+                         f"⭐ Пополнение зачислено!\n"
+                         f"Внесено: {fmt(val)} ⭐\n"
+                         f"Комиссия казино (10%): -{fmt(fee)} ⭐\n"
+                         f"На игровой баланс: +{fmt(credit)} ⭐\n\n"
+                         f"Твой баланс: {fmt(user['balance'])} ⭐",
+                         reply_markup=main_menu_markup())
+    except Exception as e:
+        _log_line("GIVE_NOTIFY_ERR: %s" % str(e)[:120])
+
+@bot.message_handler(commands=["take"])
+def cmd_take(message):
+    if not _require_admin(message):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        bot.send_message(message.chat.id, "Использование: /take <id или @username> <сумма>")
+        return
+    target = _resolve_target_id(parts[1])
+    if target is None:
+        bot.send_message(message.chat.id, f"Игрок @{parts[1].lstrip('@')} не найден.")
+        return
+    try:
+        val = float(parts[2])
+    except ValueError:
+        bot.send_message(message.chat.id, "Сумма должна быть числом")
+        return
+    if val <= 0:
+        bot.send_message(message.chat.id, "Сумма должна быть больше 0")
+        return
+    if str(target) not in DATA.get("users", {}):
+        bot.send_message(message.chat.id, "Игрок ещё не зарегистрирован в клубе.")
+        return
+    user = get_user(target)
+    if user["balance"] < val:
+        bot.send_message(message.chat.id, f"У игрока на балансе только {fmt(user['balance'])} ⭐")
+        return
+    user["balance"] -= val
+    save_data()
+    _log_line("TAKE uid=%s val=%s" % (target, fmt(val)))
+    bot.send_message(message.chat.id,
+                     f"✅ Снято у игрока uid={target}: -{fmt(val)} ⭐\n"
+                     f"Баланс теперь: {fmt(user['balance'])} ⭐")
+
 @bot.message_handler(commands=["revenue"])
 def cmd_revenue(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -779,11 +868,10 @@ def handle_amount(message):
         pending["amount"] = round(val, 2)
         credit = round(val * (1 - DEPOSIT_FEE), 2)
         text = (f"✅ Заявка на пополнение: {fmt(val)} ⭐\n\n"
-                f"1. Нажми в клиенте кнопку «Оплатить звёздами» (⭐)\n"
-                f"2. Отправь ровно {fmt(val)} ⭐\n"
-                f"3. Подтверди оплату — звёзды зачислятся автоматически\n\n"
-                f"Минус 10% комиссия: на баланс упадёт {fmt(credit)} ⭐.\n"
-                f"Если ничего не произошло — проверь раздел «Профиль».")
+                f"Напиши админу, что пополняешь на {fmt(val)} ⭐.\n"
+                f"После оплаты он зачислит звёзды, и на баланс упадёт:\n"
+                f"• {fmt(val)} ⭐ − 10% комиссия = {fmt(credit)} ⭐\n\n"
+                f"Возвращайся в бота — звёзды появятся на твоём балансе.")
         bot.send_message(message.chat.id, text, reply_markup=back_markup("menu_main"))
         del PENDING[uid]
 
@@ -963,12 +1051,12 @@ def cb_top(call):
 def cb_deposit(call):
     uid = call.from_user.id
     PENDING[uid] = {"mode": "deposit", "amount": None}
-    text = (f"➕ Пополнение звёздами\n\n"
+    text = (f"➕ Пополнение\n\n"
             f"1. Напиши в чат, сколько звёзд хочешь завести\n"
-            f"2. Бот покажет, сколько надо отправить\n"
-            f"3. Отправь звёзды боту через кнопку ⭐ в чате — зачислится автоматически\n\n"
+            f"2. Бот покажет, сколько упадёт на баланс\n"
+            f"3. Напиши админу для оплаты — он зачислит звёзды\n\n"
             f"💸 Комиссия казино: 10% с каждого пополнения.\n"
-            f"Пример: отправляешь 100 ⭐ → на баланс падает 90 ⭐.")
+            f"Пример: вносишь 100 ⭐ → на баланс падает 90 ⭐.")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=back_markup("menu_main"))
     except Exception:
@@ -978,11 +1066,10 @@ def cb_deposit(call):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep") and c.data[3:].isdigit())
 def cb_dep_fast(call):
     val = float(call.data.replace("dep", ""))
-    user = get_user(call.from_user.id)
     credit = round(val * (1 - DEPOSIT_FEE), 2)
     text = (f"➕ {fmt(val)} ⭐ звёзд\n\n"
-            f"Пришли эту сумму боту через отправку звёзд (кнопка ⭐ в чате).\n"
-            f"На баланс будет зачислено {fmt(credit)} ⭐ (комиссия 10%).")
+            f"Напиши админу, что хочешь пополнить на {fmt(val)} ⭐.\n"
+            f"После оплаты он зачислит тебе {fmt(credit)} ⭐ (комиссия казино 10%).")
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
                               reply_markup=back_markup("deposit"))
