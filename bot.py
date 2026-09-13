@@ -57,14 +57,31 @@ try:
             with RING_LOCK:
                 LOG_RING.append("FILEWRITE_ERR: " + str(e)[:200])
 
+    def _msg_summary(m):
+        if isinstance(m, dict):
+            return "MSG(dict) keys=%s data=%r" % (list(m.keys())[:20], str(m)[:300])
+        chat = getattr(m, "chat", None)
+        fu = getattr(m, "from_user", None)
+        return "MSG ct=%s chat=%s from=%s text=%r" % (
+            getattr(m, "content_type", None), getattr(chat, "id", None) if chat else None,
+            getattr(fu, "id", None) if fu else None, (getattr(m, "text", None) or "")[:80])
+
     def _update_summary(u):
+        if isinstance(u, (list, tuple)):
+            return " | ".join(_msg_summary(x) for x in u[:8])
+        if isinstance(u, dict):
+            if "message" in u:
+                return _msg_summary(u["message"])
+            if "callback_query" in u:
+                cq = u["callback_query"] or {}
+                cm = cq.get("message") or {}
+                return "CB chat=%s from=%s data=%r" % (
+                    (cm.get("chat") or {}).get("id"), (cq.get("from") or {}).get("id"),
+                    (cq.get("data") or "")[:80])
+            return "RAW dict keys=%s data=%r" % (list(u.keys())[:20], str(u)[:300])
         m = getattr(u, "message", None) or getattr(u, "edited_message", None) or getattr(u, "business_message", None)
         if m is not None:
-            chat = getattr(m, "chat", None)
-            fu = getattr(m, "from_user", None)
-            return "MSG ct=%s chat=%s from=%s text=%r" % (
-                getattr(m, "content_type", None), getattr(chat, "id", None),
-                getattr(fu, "id", None), (getattr(m, "text", None) or "")[:80])
+            return _msg_summary(m)
         cq = getattr(u, "callback_query", None)
         if cq is not None:
             cm = getattr(cq, "message", None)
@@ -72,17 +89,14 @@ try:
                 getattr(cm, "chat", None).id if cm and getattr(cm, "chat", None) else None,
                 getattr(getattr(cq, "from_user", None), "id", None),
                 (getattr(cq, "data", None) or "")[:80])
-        if isinstance(u, dict):
-            return "RAW dict keys=%s data=%r" % (list(u.keys())[:20], str(u)[:300])
-        return "UP %s present=%s" % (type(u).__name__, [k for k in vars(u) if getattr(u, k, None) is not None][:15])
+        return "UP %s" % type(u).__name__
 
     def _on_update(u):
         LAST_UPDATE["ts"] = time.time()
         try:
             _log_line(_update_summary(u))
         except Exception as e:
-            with RING_LOCK:
-                LOG_RING.append("ONUPDATE_ERR: " + repr(e) + " " + traceback.format_exc()[-400:])
+            _log_line("ONUPDATE_ERR: %r %s" % (e, traceback.format_exc()[-300:]))
     bot.set_update_listener(_on_update)
 except Exception:
     pass
@@ -365,11 +379,7 @@ def cmd_start(message):
             f"Выбирай раздел в меню:")
     try:
         bot.send_message(message.chat.id, text, reply_markup=main_menu_markup())
-        try:
-            with open("/tmp/updates.log", "a", encoding="utf-8") as f:
-                f.write("[%s] REPLIED /start chat=%s\n" % (time.strftime("%d.%m %H:%M:%S"), message.chat.id))
-        except Exception:
-            pass
+        _log_line("REPLIED /start chat=%s" % message.chat.id)
     except Exception as e:
         import logging
         logging.getLogger("TeleBot").exception("cmd_start send failed")
