@@ -325,6 +325,7 @@ def handle_star_payment(message):
                          reply_markup=main_menu_markup())
     elif message.content_type in ("successful_payment", "invoice", "withdrawal"):
         bot.reply_to(message, "Не удалось распознать сумму звёзд. Нажми /debug")
+    return ContinueHandling()
 
 # универсальный ловец: считаем ВСЕ апдейты, чтобы понять формат
 @bot.message_handler(func=lambda m: True)
@@ -944,6 +945,15 @@ if __name__ == "__main__":
             updates = bot.get_updates(offset=(bot.last_update_id + 1), timeout=15)
             if updates:
                 _log_line("POLL got=%d first_id=%d" % (len(updates), updates[0].update_id))
+                try:
+                    m0 = updates[0].message
+                    if m0 is not None:
+                        star_attr = [a for a in ("star", "stars", "gift", "gift_amount", "paid_star_count") if hasattr(m0, a)]
+                        _log_line("DIAG n_handlers=%d ct=%s star_hasattr=%s text=%r" % (
+                            len(bot.message_handlers), getattr(m0, "content_type", None),
+                            star_attr, (getattr(m0, "text", None) or "")[:50]))
+                except Exception as e:
+                    _log_line("DIAG_ERR: %s %s" % (type(e).__name__, str(e)[:200]))
                 bot.process_new_updates(updates)
                 _log_line("PROCESSED n=%d" % len(updates))
             else:
