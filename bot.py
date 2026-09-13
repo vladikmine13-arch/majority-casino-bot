@@ -17,6 +17,7 @@ import os
 import random
 import threading
 import time
+import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,6 +27,25 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 TOKEN = os.environ.get("BOT_TOKEN", "1780253908:YG78GYA-LrLANjSjGqzmZXMxjeG8Nrdibid")
 
 bot = telebot.TeleBot(TOKEN)
+
+# --- ЛОГ в /tmp/bot.log (доступен через /diag) ---
+def _setup_log():
+    try:
+        import logging
+        fh = logging.FileHandler("/tmp/bot.log", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        root = logging.getLogger()
+        root.addHandler(fh)
+        root.setLevel(logging.INFO)
+        logging.getLogger("TeleBot").addHandler(fh)
+        print("logging to /tmp/bot.log")
+    except Exception as e:
+        print("log setup error", e)
+
+try:
+    bot.set_update_listener(lambda u: LAST_UPDATE.__setitem__("ts", time.time()))
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------
 # НАСТРОЙКИ
@@ -299,7 +319,15 @@ def cmd_start(message):
             f"и выводи реальные NFT со склада в свой профиль\n\n"
             f"Твой баланс: {fmt(user['balance'])} ⭐\n"
             f"Выбирай раздел в меню:")
-    bot.send_message(message.chat.id, text, reply_markup=main_menu_markup())
+    try:
+        bot.send_message(message.chat.id, text, reply_markup=main_menu_markup())
+    except Exception as e:
+        import logging
+        logging.getLogger("TeleBot").exception("cmd_start send failed")
+        try:
+            bot.send_message(message.chat.id, "Ошибка обработки: " + str(e)[:200])
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------
 # ОБЩИЙ МЕНЮ-ОБРАБОТЧИК
@@ -813,6 +841,16 @@ class HealthHandler(BaseHTTPRequestHandler):
                     out.append("getMe_body=%s" % resp.read(300).decode("utf-8", "replace"))
             except Exception as e:
                 out.append("getMe_err=%s" % type(e).__name__ + ":" + str(e)[:200])
+            try:
+                if os.path.exists("/tmp/bot.log"):
+                    with open("/tmp/bot.log", "r", encoding="utf-8") as f:
+                        lines = f.readlines()[-25:]
+                    out.append("--- LOG TAIL ---")
+                    out.extend(l.rstrip("\n")[:300] for l in lines)
+                else:
+                    out.append("no /tmp/bot.log")
+            except Exception as e:
+                out.append("log_err=" + str(e)[:200])
             body = ("\n".join(out)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -832,6 +870,7 @@ def start_health_server():
 
 if __name__ == "__main__":
     load_data()
+    _setup_log()
     thread = threading.Thread(target=start_health_server, daemon=True)
     thread.start()
     print("Bot started. Server:", SERVER_URL)
