@@ -753,11 +753,19 @@ def handle_amount(message):
         bot.send_message(message.chat.id, text, reply_markup=kb)
 
     elif pending["mode"] == "deposit":
+        if val <= 0:
+            bot.send_message(message.chat.id, "Введи сумму больше 0")
+            return
+        pending["amount"] = round(val, 2)
+        credit = round(val * (1 - DEPOSIT_FEE), 2)
+        text = (f"✅ Заявка на пополнение: {fmt(val)} ⭐\n\n"
+                f"1. Нажми на кнопку ⭐ в чате с ботом\n"
+                f"2. Отправь ровно {fmt(val)} ⭐\n"
+                f"3. Звёзды зачислятся автоматически через пару секунд\n\n"
+                f"Минус 10% комиссия: на баланс упадёт {fmt(credit)} ⭐.\n"
+                f"Если ничего не произошло — проверь раздел «Профиль».")
+        bot.send_message(message.chat.id, text, reply_markup=back_markup("menu_main"))
         del PENDING[uid]
-        bot.send_message(message.chat.id,
-                         "Звёзды зачисляются автоматически после оплаты через чат.\n\n"
-                         "Отправь звёзды боту (кнопка ⭐) — комиссия составит 10%.",
-                         reply_markup=main_menu_markup())
 
     elif pending["mode"] == "withdraw":
         if val < MIN_WITHDRAW:
@@ -933,20 +941,18 @@ def cb_top(call):
 
 @bot.callback_query_handler(func=lambda c: c.data == "deposit")
 def cb_deposit(call):
-    PENDING.pop(call.from_user.id, None)
+    uid = call.from_user.id
+    PENDING[uid] = {"mode": "deposit", "amount": None}
     text = (f"➕ Пополнение звёздами\n\n"
-            f"1. Найди бота MajorityCASINO_BOT в списке чатов\n"
-            f"2. Открой меню отправки звёзд (кнопка ⭐ «Заплатить звёздами» / «Отправить звёзды»)\n"
-            f"3. Укажи сумму и отправь боту\n\n"
-            f"Сумма зачислится на игровой баланс автоматически.\n\n"
+            f"1. Напиши в чат, сколько звёзд хочешь завести\n"
+            f"2. Бот покажет, сколько надо отправить\n"
+            f"3. Отправь звёзды боту через кнопку ⭐ в чате — зачислится автоматически\n\n"
             f"💸 Комиссия казино: 10% с каждого пополнения.\n"
-            f"Пример: отправляешь 100 ⭐ → на баланс падает 90 ⭐.\n\n"
-            f"После оплаты проверь свой баланс в разделе «Профиль».")
-    kb = back_markup("menu_main")
+            f"Пример: отправляешь 100 ⭐ → на баланс падает 90 ⭐.")
     try:
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=back_markup("menu_main"))
     except Exception:
-        bot.send_message(call.message.chat.id, text, reply_markup=kb)
+        bot.send_message(call.message.chat.id, text, reply_markup=back_markup("menu_main"))
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dep") and c.data[3:].isdigit())
